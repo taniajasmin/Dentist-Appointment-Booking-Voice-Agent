@@ -28,13 +28,8 @@ It uses **FastAPI** (Python) + **OpenAI GPT** for natural conversation, browser 
 ---
 
 ## Setup
-### 1. Clone the repo
-```bash
-git clone https://github.com/<your-username>/dental-voice-agent-demo.git
-cd dental-voice-agent-demo
-```
 
-### 2. Create virtual environment & install dependencies
+### 1. Create virtual environment & install dependencies
 ```bash
 python -m venv .venv
 .venv\Scripts\activate # on Windows
@@ -47,7 +42,7 @@ pip install -r requirements.txt
 pip install fastapi uvicorn python-dotenv openai openpyxl python-dateutil
 ```
 
-### 3. Add environment variables
+### 2. Add environment variables
 Create a file named `.env` in the project root:
 ```
 OPENAI_API_KEY=your_openai_api_key_here
@@ -56,7 +51,7 @@ TZ=UTC
 ```
 ⚠️ `.env` is in `.gitignore` → it will not be uploaded to GitHub.
 
-### 4. Run the server
+### 3. Run the server
 ```bash
 uvicorn app:app --reload --port 8000
 ```
