@@ -1,0 +1,18 @@
+@"
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+.env
+
+# # Local files
+# bookings_dentist.xlsx
+
+# IDE
+.vscode/
+.idea/
+

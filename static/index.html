@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Dental Voice Agent Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="header">
+    <div class="brand">🦷 Dental Voice Agent</div>
+    <div class="status">
+      <span id="statusText">Idle</span>
+      <span id="statusDot" class="status-dot idle"></span>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="card" style="margin-bottom:16px;">
+      <div class="controls">
+        <button id="startBtn" class="btn primary">▶ Start Demo Call</button>
+        <button id="stopBtn" class="btn danger" disabled>■ Stop</button>
+        <div id="mic" class="mic" title="Mic status">🎙</div>
+      </div>
+
+      <div class="pills">
+        <span class="pill" id="p_doctor"><b>doctor</b>: —</span>
+        <span class="pill" id="p_name"><b>name</b>: —</span>
+        <span class="pill" id="p_phone"><b>phone</b>: —</span>
+        <span class="pill" id="p_service"><b>service</b>: —</span>
+        <span class="pill" id="p_date"><b>date</b>: —</span>
+        <span class="pill" id="p_time"><b>time</b>: —</span>
+      </div>
+
+      <div class="small" style="margin-top:10px;">
+        Available doctors:
+        <ul id="doctorList" class="inline-list"></ul>
+      </div>
+    </section>
+
+    <section class="card">
+      <h4 style="margin:0 0 8px 0;">Transcript & Prompts</h4>
+      <div id="log"></div>
+      <div class="hint">Tip: allow microphone access in your browser. Chrome desktop recommended.</div>
+    </section>
+  </main>
+
+  <script>
+    const API = location.origin;
+    const synth = window.speechSynthesis;
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    /* -------------------- State -------------------- */
+    let doctors = [];
+    let recog = null;           // singleton SR
+    let isRunning = false;
+    let listening = false;      // SR active flag
+    let filled = { doctor:"", name:"", phone:"", service:"", date_text:"", time_text:"" };
+    let nextQuestion = "Welcome to our dental clinic. Which doctor would you like to book with?";
+    let ready = false;
+
+    /* -------------------- UI helpers -------------------- */
+    const log = (t) => {
+      const el = document.getElementById('log');
+      el.textContent += t + "\n";
+      el.scrollTop = el.scrollHeight;
+    };
+
+    const setStatus = (mode) => {
+      const dot = document.getElementById('statusDot');
+      const mic = document.getElementById('mic');
+      const txt = document.getElementById('statusText');
+      dot.className = 'status-dot ' + (mode || 'idle');
+      mic.className = 'mic' + (mode ? ' ' + mode : '');
+      txt.textContent = mode === 'listening' ? 'Listening' : mode === 'speaking' ? 'Speaking' : 'Idle';
+    };
+
+    function showFilled(){
+      const set = (id, v) => { const el = document.getElementById(id); if (el) el.innerHTML = `<b>${id.split('_')[1]}</b>: ${v || '—'}`; };
+      set('p_doctor', filled.doctor);
+      set('p_name', filled.name);
+      set('p_phone', filled.phone);
+      set('p_service', filled.service);
+      set('p_date', filled.date_text);
+      set('p_time', filled.time_text);
+    }
+
+    /* -------------------- Voice: TTS -------------------- */
+    function waitForVoices() {
+      return new Promise(resolve => {
+        let voices = synth.getVoices();
+        if (voices.length) return resolve(voices);
+        synth.onvoiceschanged = () => resolve(synth.getVoices());
+      });
+    }
+
+    async function speak(text){
+      await waitForVoices();
+      // Cancel SR if somehow still listening while we speak (keeps focus clean)
+      try { const r = getRecognizer(); if (listening) { r.abort(); listening = false; } } catch {}
+      const ut = new SpeechSynthesisUtterance(text);
+      ut.rate = 0.95; ut.pitch = 1.0;
+      const v = synth.getVoices().find(v => /en-US/i.test(v.lang) && /female|Samantha|Jenny|Google US English/i.test(v.name));
+      if (v) ut.voice = v;
+      setStatus('speaking');
+      return new Promise(resolve => {
+        ut.onend = () => { setStatus('idle'); resolve(); };
+        synth.cancel();               // stop any prior utterance
+        synth.speak(ut);
+      });
+    }
+
+    /* -------------------- Voice: STT -------------------- */
+    async function primeMic() {
+      // Force the permission prompt once at start
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
+    }
+
+    function getRecognizer() {
+      if (!SR) throw new Error("SpeechRecognition not supported. Use Chrome desktop.");
+      if (!recog) {
+        recog = new SR();
+        recog.lang = 'en-US';
+        recog.interimResults = false;
+        recog.maxAlternatives = 1;
+        // Avoid automatic restarts by not setting continuous, we want one shot
+      }
+      return recog;
+    }
+
+    function listenOnce() {
+      return new Promise((resolve, reject) => {
+        try {
+          const r = getRecognizer();
+
+          // If an earlier session is still alive, abort first
+          if (listening) {
+            try { r.abort(); } catch {}
+            listening = false;
+          }
+
+          r.onresult = (e) => {
+            listening = false;
+            setStatus('idle');
+            resolve(e.results[0][0].transcript);
+          };
+          r.onerror = (e) => {
+            listening = false;
+            setStatus('idle');
+            // Normalize common, recoverable errors
+            if (e.error === 'no-speech')  return reject(new Error("No speech detected—try again."));
+            if (e.error === 'audio-capture') return reject(new Error("No microphone. Check device or permissions."));
+            if (e.error === 'not-allowed' || e.error === 'service-not-allowed')
+              return reject(new Error("Mic blocked. Allow mic for 127.0.0.1 in Site settings."));
+            return reject(new Error(e.error || "SR error"));
+          };
+          r.onend = () => { listening = false; };
+
+          listening = true;
+          setStatus('listening');
+          r.start();
+        } catch (err) {
+          reject(err);
+        }
+      });
+    }
+
+    /* -------------------- API calls -------------------- */
+    async function callNLU(user_text){
+      const res = await fetch(`${API}/nlu`,{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ filled, user_text })
+      });
+      return res.json();
+    }
+
+    async function checkSlot(){
+      const res = await fetch(`${API}/check`,{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          doctor: filled.doctor,
+          date_text: filled.date_text,
+          time_text: filled.time_text
+        })
+      });
+      return res.json();
+    }
+
+    async function bookNow(){
+      const res = await fetch(`${API}/book`,{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          doctor: filled.doctor,
+          name: filled.name,
+          phone: filled.phone,
+          service: filled.service,
+          date_text: filled.date_text,
+          time_text: filled.time_text
+        })
+      });
+      return res.json();
+    }
+
+    /* -------------------- Main loop -------------------- */
+    async function loop(){
+      if (!isRunning) return;
+
+      log("Agent: " + nextQuestion);
+      await speak(nextQuestion);
+
+      try{
+        const userText = await listenOnce();
+        log("Caller: " + userText);
+
+        const data = await callNLU(userText);
+        filled = Object.assign(filled, data.filled || {});
+        ready = !!data.ready;
+        nextQuestion = data.next_question || "Could you please repeat?";
+        showFilled();
+
+        if (ready && filled.doctor && filled.name && filled.phone && filled.service && filled.date_text && filled.time_text){
+          const chk = await checkSlot();
+          if (!chk.ok){
+            nextQuestion = chk.message || "That time doesn't work. Please choose another date or time.";
+          } else {
+            const res = await bookNow();
+            const confirm = res?.message || "Your booking is confirmed.";
+            log("Agent: " + confirm);
+            await speak(confirm);
+            stopDemo(); return;
+          }
+        }
+      }catch(e){
+        log("System: " + e.message);
+      }
+
+      if (isRunning) loop();
+    }
+
+    /* -------------------- Controls -------------------- */
+    async function startDemo() {
+      if (!SR) { alert("Your browser doesn't support SpeechRecognition. Use Chrome desktop."); return; }
+      try { await primeMic(); } catch (e) { alert("Microphone permission is required. " + e.message); return; }
+
+      isRunning = true;
+      document.getElementById('startBtn').disabled = true;
+      document.getElementById('stopBtn').disabled = false;
+      document.getElementById('log').textContent = "";
+      filled = { doctor:"", name:"", phone:"", service:"", date_text:"", time_text:"" };
+      nextQuestion = "Welcome to our dental clinic. Which doctor would you like to book with?";
+      showFilled(); setStatus('idle');
+      loop();
+    }
+
+    function stopDemo() {
+      isRunning = false;
+      try { const r = getRecognizer(); r.abort(); } catch {}
+      synth.cancel();
+      setStatus('idle');
+      document.getElementById('startBtn').disabled = false;
+      document.getElementById('stopBtn').disabled = true;
+    }
+
+    /* -------------------- Boot -------------------- */
+    document.getElementById('startBtn').onclick = startDemo;
+    document.getElementById('stopBtn').onclick = stopDemo;
+    showFilled(); setStatus('idle');
+
+    /* Load doctors into UI list */
+    fetch(`${API}/api/doctors`).then(r=>r.json()).then(d => {
+      doctors = d.doctors || [];
+      const ul = document.getElementById('doctorList');
+      ul.innerHTML = doctors.map(x => `<li>${x}</li>`).join('');
+    });
+    </script>
+
+
+  <!-- <script>
+  const API = location.origin;
+  const synth = window.speechSynthesis;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  let doctors = [];
+  fetch(`${API}/api/doctors`).then(r=>r.json()).then(d => {
+    doctors = d.doctors || [];
+    const ul = document.getElementById('doctorList');
+    ul.innerHTML = doctors.map(x => `<li>${x}</li>`).join('');
+  });
+
+  let recog = null;
+  let isRunning = false;
+  let filled = { doctor:"", name:"", phone:"", service:"", date_text:"", time_text:"" };
+  let nextQuestion = "Welcome to our dental clinic. Which doctor would you like to book with?";
+  let ready = false;
+
+  /* ---------- UI helpers ---------- */
+  const log = (t) => {
+    const el = document.getElementById('log');
+    el.textContent += t + "\n";
+    el.scrollTop = el.scrollHeight;
+  };
+
+  const setStatus = (mode) => {
+    const dot = document.getElementById('statusDot');
+    const mic = document.getElementById('mic');
+    const txt = document.getElementById('statusText');
+    dot.className = 'status-dot ' + (mode || 'idle');
+    mic.className = 'mic' + (mode ? ' ' + mode : '');
+    txt.textContent = mode === 'listening' ? 'Listening' : mode === 'speaking' ? 'Speaking' : 'Idle';
+  };
+
+  function showFilled(){
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.innerHTML = `<b>${id.split('_')[1]}</b>: ${v || '—'}`; };
+    set('p_doctor', filled.doctor);
+    set('p_name', filled.name);
+    set('p_phone', filled.phone);
+    set('p_service', filled.service);
+    set('p_date', filled.date_text);
+    set('p_time', filled.time_text);
+  }
+
+  function waitForVoices() {
+    return new Promise(resolve => {
+      let voices = synth.getVoices();
+      if (voices.length) return resolve(voices);
+      synth.onvoiceschanged = () => resolve(synth.getVoices());
+    });
+  }
+
+  async function speak(text, cb){
+    await waitForVoices();
+    const ut = new SpeechSynthesisUtterance(text);
+    ut.rate = 0.95; ut.pitch = 1.0;
+    const v = synth.getVoices().find(v => /en-US/i.test(v.lang) && /female|Samantha|Jenny|Google US English/i.test(v.name));
+    if (v) ut.voice = v;
+    ut.onend = () => { setStatus('idle'); cb && cb(); };
+    synth.cancel();
+    setStatus('speaking');
+    synth.speak(ut);
+  }
+
+  function listenOnce() {
+    return new Promise((resolve, reject)=>{
+      if (!SR) return reject(new Error("SpeechRecognition not supported. Use Chrome desktop."));
+      recog = new SR();
+      recog.lang = 'en-US';
+      recog.interimResults = false;
+      recog.maxAlternatives = 1;
+      recog.onresult = e => { setStatus('idle'); resolve(e.results[0][0].transcript); };
+      recog.onerror = e => { setStatus('idle'); reject(e.error); };
+      setStatus('listening');
+      recog.start();
+    });
+  }
+
+  async function callNLU(user_text){
+    const res = await fetch(`${API}/nlu`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ filled, user_text })
+    });
+    return res.json();
+  }
+
+  async function checkSlot(){
+    const res = await fetch(`${API}/check`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        doctor: filled.doctor,
+        date_text: filled.date_text,
+        time_text: filled.time_text
+      })
+    });
+    return res.json();
+  }
+
+  async function bookNow(){
+    const res = await fetch(`${API}/book`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        doctor: filled.doctor,
+        name: filled.name,
+        phone: filled.phone,
+        service: filled.service,
+        date_text: filled.date_text,
+        time_text: filled.time_text
+      })
+    });
+    return res.json();
+  }
+
+  async function loop(){
+    if (!isRunning) return;
+
+    log("Agent: " + nextQuestion);
+    await new Promise(r => speak(nextQuestion, r));
+
+    try{
+      const userText = await listenOnce();
+      log("Caller: " + userText);
+
+      const data = await callNLU(userText);
+      filled = Object.assign(filled, data.filled || {});
+      ready = !!data.ready;
+      nextQuestion = data.next_question || "Could you please repeat?";
+      showFilled();
+
+      if (ready && filled.doctor && filled.name && filled.phone && filled.service && filled.date_text && filled.time_text){
+        const chk = await checkSlot();
+        if (!chk.ok){
+          nextQuestion = chk.message || "That time doesn't work. Please choose another date or time.";
+        } else {
+          const res = await bookNow();
+          const confirm = res?.message || "Your booking is confirmed.";
+          log("Agent: " + confirm);
+          await new Promise(r => speak(confirm, r));
+          stopDemo(); return;
+        }
+      }
+    }catch(e){
+      log("System: " + e);
+    }
+
+    if (isRunning) loop();
+  }
+
+  function startDemo() {
+    if (!SR) { alert("Your browser doesn't support SpeechRecognition. Use Chrome desktop."); return; }
+    isRunning = true;
+    document.getElementById('startBtn').disabled = true;
+    document.getElementById('stopBtn').disabled = false;
+    document.getElementById('log').textContent = "";
+    filled = { doctor:"", name:"", phone:"", service:"", date_text:"", time_text:"" };
+    nextQuestion = "Welcome to our dental clinic. Which doctor would you like to book with?";
+    showFilled(); setStatus('idle');
+    loop();
+  }
+
+  function stopDemo() {
+    isRunning = false;
+    try { recog && recog.stop(); } catch {}
+    synth.cancel();
+    setStatus('idle');
+    document.getElementById('startBtn').disabled = false;
+    document.getElementById('stopBtn').disabled = true;
+  }
+
+  document.getElementById('startBtn').onclick = startDemo;
+  document.getElementById('stopBtn').onclick = stopDemo;
+  showFilled(); setStatus('idle');
+  </script> -->
+</body>
+</html>
