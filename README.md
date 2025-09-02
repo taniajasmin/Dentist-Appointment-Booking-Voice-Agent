@@ -89,9 +89,9 @@ demo/
 ---
 
 ## Screenshots
-![Screenshot 1](https://github.com/user-attachments/assets/3adcee49-8a7f-405a-af0c-127790183713)
-![Screenshot 2](https://github.com/user-attachments/assets/feeba096-748d-4a08-908d-f2e5ae7ceae1)
-![Screenshot 3](https://github.com/user-attachments/assets/cf2555b5-39ce-4ef6-a217-785dfb6f6ac8)
+<img src="https://github.com/user-attachments/assets/3adcee49-8a7f-405a-af0c-127790183713" alt="Screenshot 1" width="400">
+  <img src="https://github.com/user-attachments/assets/feeba096-748d-4a08-908d-f2e5ae7ceae1" alt="Screenshot 2" width="400">
+  <img src="https://github.com/user-attachments/assets/cf2555b5-39ce-4ef6-a217-785dfb6f6ac8" alt="Screenshot 3" width="400">
 
 ---
 
