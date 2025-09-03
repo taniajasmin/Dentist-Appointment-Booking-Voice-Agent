@@ -1,5 +1,5 @@
-# Dental Voice Agent Demo
-This is a **demo project** of a browser-based **voice receptionist** for a dental clinic.
+# Dentist Appointment Booking Voice Agent
+This is a browser-based **voice receptionist** for a dental clinic.
 It uses **FastAPI** (Python) + **OpenAI GPT** for natural conversation, browser **SpeechRecognition / SpeechSynthesis** for voice, and **Excel (openpyxl)** as the booking backend.
 
 ---
