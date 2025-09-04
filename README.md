@@ -4,7 +4,7 @@ It uses **FastAPI** (Python) + **OpenAI GPT** for natural conversation, browser 
 
 ---
 ## 🎥 Demo Video
-[![Watch the demo](https://youtu.be/your-video-id](https://github.com/user-attachments/assets/b6e75c59-aa60-432d-837c-aa8b9a73ec17))
+https://github.com/user-attachments/assets/b6e75c59-aa60-432d-837c-aa8b9a73ec17
 
 ---
 
