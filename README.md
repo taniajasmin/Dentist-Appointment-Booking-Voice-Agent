@@ -3,6 +3,17 @@ This is a browser-based **voice receptionist** for a dental clinic.
 It uses **FastAPI** (Python) + **OpenAI GPT** for natural conversation, browser **SpeechRecognition / SpeechSynthesis** for voice, and **Excel (openpyxl)** as the booking backend.
 
 ---
+## 🎥 Demo Video
+[![Watch the demo](https://youtu.be/your-video-id](https://github.com/user-attachments/assets/b6e75c59-aa60-432d-837c-aa8b9a73ec17))
+
+---
+
+## Known Issue
+In the demo, you may notice that the receptionist couldn’t change the doctor once a slot was already taken.  
+This behavior can be improved by adjusting the **system prompt** and updating a two parts of the program logic so that changing the doctor clears only the doctor's name and asks the user to reselect. All other parts remain unchanged.
+
+---
+
 
 ## Features
 - Acts like a human receptionist:
