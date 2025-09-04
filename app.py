@@ -1,396 +1,3 @@
-# import os
-# import re
-# import json
-# from datetime import datetime
-# from dotenv import load_dotenv
-
-# from fastapi import FastAPI, Request
-# from fastapi.middleware.cors import CORSMiddleware
-# from fastapi.staticfiles import StaticFiles
-# from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
-# import difflib
-
-# import dateparser
-
-# # Excel I/O helpers (your excel_io.py)
-# from excel_io import (
-#     list_doctors,
-#     doctor_exists,
-#     slot_available,
-#     append_booking,
-#     within_hours,
-#     ensure_workbook_with_doctors,
-# )
-
-# # Optional readback for /api/bookings
-# from openpyxl import load_workbook
-# from pathlib import Path
-
-# # -------- Env & OpenAI client --------
-# load_dotenv()
-# BRAND = os.getenv("BRAND_NAME", "Demo Dental Clinic")
-# TZ = os.getenv("TZ", "UTC")
-
-# from openai import OpenAI
-# client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-# # -------- FastAPI app --------
-# app = FastAPI()
-
-# # CORS so the browser frontend can call APIs locally
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=["*"], allow_credentials=True,
-#     allow_methods=["*"], allow_headers=["*"],
-# )
-
-# app.mount("/static", StaticFiles(directory="static", html=True), name="static")
-
-# @app.get("/", response_class=HTMLResponse)
-# async def root():
-#     return RedirectResponse(url="/static/")
-
-# # Ensure the Excel file exist once at startup (won't overwrite if present)
-# @app.on_event("startup")
-# def _init_file():
-#     ensure_workbook_with_doctors()
-
-# # List doctors (fed to the frontend and NLU)
-# @app.get("/api/doctors")
-# def api_doctors():
-#     return {"doctors": list_doctors()}
-
-
-# # SYSTEM_PROMPT = """
-# # You are a friendly, concise receptionist for a dental clinic.
-# # Goal: collect 6 fields: doctor, name, phone, service, date, time.
-# # Always ask for the DOCTOR first. The list of valid doctors will be provided by the user message.
-# # Keep responses short, one question at a time.
-# # If user gives multiple fields at once, accept them.
-# # If the users ask you to wait, you will wait for a few seconds. Then ask from where you left off.
-# # If the user says "hello", "I'm ready", you will start from where you left off.
-# # Do not let users figure out that you are not a human.
-# # When you have all fields, return "ready": true.
-
-# # ALWAYS respond with pure JSON (no extra text):
-# # {
-# #   "filled": {"doctor":"", "name":"", "phone":"", "service":"", "date_text":"", "time_text":""},
-# #   "next_question": "string",
-# #   "ready": false
-# # }
-
-# # Rules:
-# # - Phone must be digits only (no spaces).
-# # - Keep date_text/time_text exactly as user said (do not reformat).
-# # - If the chosen doctor is NOT in the provided list, set filled.doctor="" and next_question should say which doctors are available and ask the caller to choose one.
-# # """
-
-# def _norm_doctor_text(s: str) -> str:
-#     """Lowercase, strip 'dr', punctuation, and extra spaces for matching."""
-#     if not s:
-#         return ""
-#     s = s.lower()
-#     s = re.sub(r"\bdr\.?\b", "", s)         # remove 'dr' / 'dr.'
-#     s = re.sub(r"[^a-z0-9\s]", " ", s)      # drop punctuation
-#     s = re.sub(r"\s+", " ", s).strip()
-#     return s
-
-# def _tokens(s: str) -> list[str]:
-#     return _norm_doctor_text(s).split()
-
-# def _score(user: str, opt: str) -> float:
-#     """
-#     Combined score:
-#     - difflib ratio
-#     - token prefix/containment bonus (helps single-word like 'house', 'hasan')
-#     """
-#     u = _norm_doctor_text(user)
-#     o = _norm_doctor_text(opt)
-#     if not u or not o:
-#         return 0.0
-#     ratio = difflib.SequenceMatcher(None, u, o).ratio()  # 0..1
-#     ut, ot = _tokens(user), _tokens(opt)
-
-#     # token overlap / prefix bonuses
-#     overlap = len(set(ut) & set(ot)) / max(1, len(set(ut)))
-#     prefix = 0.0
-#     for t in ut:
-#         if any(x.startswith(t) for x in ot):  # 'has' in 'hasan', 'hou' in 'house'
-#             prefix += 1
-#     prefix = prefix / max(1, len(ut))
-
-#     contain = 1.0 if (u in o or o in u) else 0.0
-
-#     # weights tuned for 3 doctors / speech noise
-#     return 0.65 * ratio + 0.25 * prefix + 0.10 * contain + 0.15 * overlap
-
-# def choose_doctor(user_text: str) -> tuple[str | None, list[str] | None]:
-#     """
-#     Returns (canonical_name, None) if confident,
-#             (None, ['Dr A', 'Dr B']) if ambiguous between a few,
-#             (None, None) if no good match.
-#     """
-#     if not user_text:
-#         return None, None
-
-#     options = list_doctors()
-#     # exact-ish match first
-#     nu = _norm_doctor_text(user_text)
-#     for opt in options:
-#         if _norm_doctor_text(opt) == nu:
-#             return opt, None
-
-#     # fuzzy scores
-#     scored = sorted((( _score(user_text, opt), opt ) for opt in options), reverse=True)
-#     best_score, best_name = scored[0]
-
-#     # accept if clearly best; otherwise ask between close candidates
-#     # thresholds: best >= 0.58 and margin >= 0.08 → accept
-#     # if margin small, present top 2 to disambiguate
-#     margin = best_score - (scored[1][0] if len(scored) > 1 else 0.0)
-
-#     if best_score >= 0.58 and margin >= 0.08:
-#         return best_name, None
-
-#     if best_score >= 0.50 and len(scored) >= 2:
-#         top2 = [scored[0][1], scored[1][1]]
-#         return None, top2
-
-#     return None, None
-
-
-# SYSTEM_PROMPT = """
-# You are a friendly, concise receptionist for a dental clinic.
-# Your job is to collect exactly 6 fields: doctor, name, phone, service, date, time.
-# ALWAYS ask for the DOCTOR first. The list of valid doctors will be provided in the user message.
-# Keep responses short (≤15 words), one question at a time.
-
-# Output format (STRICT): respond with pure JSON only (no extra text):
-# {
-#   "filled": {"doctor":"", "name":"", "phone":"", "service":"", "date_text":"", "time_text":""},
-#   "next_question": "string",
-#   "ready": false
-# }
-
-# Rules:
-# - If the caller provides multiple fields at once, accept them.
-# - Phone can include spaces or words (e.g., 'zero'). Convert everything into digits only.
-# - Accept once at least 8 digits are present.
-# - Preserve the caller’s wording for date_text and time_text (do not reformat).
-# - Doctor must be chosen ONLY from the provided list. If the spoken name is not on the list:
-#   - set filled.doctor = ""
-#   - set next_question to politely list the available doctors and ask them to choose one.
-# - If the caller says “wait”, “hold on”, or is silent/unclear:
-#   - set next_question to a brief acknowledgment like “No problem—say ‘I’m ready’ to continue.”
-#   - keep ready = false and do not lose previously filled fields.
-# - If the caller says “hello”, “I’m ready”, or “continue”:
-#   - resume asking for the next missing field (do NOT restart).
-# - Be natural and warm. If asked, you are the clinic’s automated assistant.
-# - When all 6 fields are present, set ready = true and ask a short confirmation question.
-
-# Behavior:
-# - Always ask for exactly one missing field per turn (except a final confirmation).
-# - Never include greetings or chit-chat beyond what’s needed to progress.
-# - Never include anything except the JSON object described above.
-# """
-
-# # ... after data = json.loads(raw) and phone sanitize ...
-
-# # Map spoken doctor to canonical (or ask to clarify if ambiguous)
-# doc_in = (data.get("filled", {}) or {}).get("doctor", "")
-# canon, ambiguous = choose_doctor(doc_in)
-
-# if doc_in and canon:
-#     data["filled"]["doctor"] = canon
-# elif doc_in and ambiguous:
-#     data["filled"]["doctor"] = ""
-#     data["ready"] = False
-#     data["next_question"] = f"Did you mean {ambiguous[0]} or {ambiguous[1]}?"
-
-
-# # def clean_phone(s: str) -> str:
-# #     return re.sub(r"\D", "", s or "")
-
-# def clean_phone(s: str) -> str:
-#     digits = re.sub(r"\D", "", s or "")
-#     # accept if it looks like a phone number
-#     return digits if len(digits) >= 8 else ""
-
-
-# @app.post("/nlu")
-# async def nlu(req: Request):
-#     """Takes current filled fields + latest user text, returns JSON (fields/next_question/ready)."""
-#     body = await req.json()
-#     filled = body.get("filled", {}) or {}
-#     user_text = body.get("user_text", "") or ""
-#     doctors = list_doctors()
-
-#     # sanitize existing phone
-#     filled["phone"] = clean_phone(filled.get("phone", ""))
-
-#     prompt_user = (
-#         f"Valid doctors list: {doctors}\n"
-#         f"Current filled fields: {json.dumps(filled)}\n"
-#         f'User said: "{user_text}"\n'
-#         f"Return JSON as specified."
-#     )
-
-#     try:
-#         resp = client.chat.completions.create(
-#             model="gpt-4o-mini",
-#             temperature=0.1,
-#             messages=[
-#                 {"role": "system", "content": SYSTEM_PROMPT},
-#                 {"role": "user", "content": prompt_user},
-#             ],
-#         )
-#         raw = (resp.choices[0].message.content or "").strip()
-#         data = json.loads(raw)
-#     except Exception:
-#         data = {
-#             "filled": filled,
-#             "next_question": "Sorry, could you repeat that?",
-#             "ready": False,
-#         }
-
-#     # sanitize phone again
-#     if "filled" in data and data["filled"].get("phone"):
-#         data["filled"]["phone"] = clean_phone(data["filled"]["phone"])
-
-#     # Force reprompt if doctor invalid
-#     doc = (data.get("filled", {}) or {}).get("doctor", "")
-#     if doc and not doctor_exists(doc):
-#         data["filled"]["doctor"] = ""
-#         data["ready"] = False
-#         data["next_question"] = (
-#             f"Sorry, that doctor is not in our clinic. "
-#             f"Available doctors: {', '.join(doctors)}. Which doctor would you like?"
-#         )
-
-#     return JSONResponse(data)
-
-# # -------- Booking checks & writing --------
-# def normalize(date_text: str, time_text: str, tz_name: str):
-#     """Return (YYYY-MM-DD, HH:MM) or (None, None) if unparseable."""
-#     try:
-#         dt = dateparser.parse(
-#             f"{date_text} {time_text}",
-#             settings={"TIMEZONE": tz_name, "RETURN_AS_TIMEZONE_AWARE": False},
-#         )
-#         if not dt:
-#             return None, None
-#         return dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M")
-#     except Exception:
-#         return None, None
-
-# @app.post("/check")
-# async def check(req: Request):
-#     body = await req.json()
-#     doctor = (body.get("doctor") or "").strip()
-#     date_text = (body.get("date_text") or "").strip()
-#     time_text = (body.get("time_text") or "").strip()
-
-#     if not doctor_exists(doctor):
-#         return {
-#             "ok": False,
-#             "reason": "unknown-doctor",
-#             "message": f"Doctor not found. Available: {', '.join(list_doctors())}",
-#         }
-
-#     date_str, time_str = normalize(date_text, time_text, TZ)
-#     if not date_str or not time_str:
-#         return {
-#             "ok": False,
-#             "reason": "bad-datetime",
-#             "message": "Sorry, I couldn't understand that date and time.",
-#         }
-
-#     if not within_hours(time_str):
-#         return {
-#             "ok": False,
-#             "reason": "outside-hours",
-#             "message": "Our doctors are available 14:00 to 23:59. Please choose a time in that range.",
-#         }
-
-#     if not slot_available(doctor, date_str, time_str):
-#         return {
-#             "ok": False,
-#             "reason": "overlap",
-#             "message": "That time is already booked. Please choose another time or another date.",
-#         }
-
-#     return {"ok": True, "date": date_str, "time": time_str}
-
-# @app.post("/book")
-# async def book(req: Request):
-#     body = await req.json()
-#     doctor = (body.get("doctor") or "").strip()
-#     name = (body.get("name") or "").strip()
-#     phone = clean_phone(body.get("phone", ""))
-#     service = (body.get("service") or "").strip()
-#     date_text = (body.get("date_text") or "").strip()
-#     time_text = (body.get("time_text") or "").strip()
-
-#     if not doctor_exists(doctor):
-#         return JSONResponse(
-#             {"ok": False, "message": f"Doctor not found. Available: {', '.join(list_doctors())}"},
-#             status_code=400,
-#         )
-
-#     date_str, time_str = normalize(date_text, time_text, TZ)
-#     if not date_str or not time_str:
-#         return JSONResponse({"ok": False, "message": "Invalid date/time."}, status_code=400)
-
-#     if not within_hours(time_str):
-#         return JSONResponse(
-#             {"ok": False, "message": "Doctors are available 14:00–23:59 only."},
-#             status_code=400,
-#         )
-
-#     if not slot_available(doctor, date_str, time_str):
-#         return JSONResponse(
-#             {"ok": False, "message": "That time is already booked. Please choose another."},
-#             status_code=409,
-#         )
-
-#     # Append to doctor's sheet
-#     append_booking(
-#         doctor,
-#         {
-#             "date": date_str,
-#             "time": time_str,
-#             "patient_name": name,
-#             "service": service,
-#             "phone": phone,
-#             "status": "confirmed",
-#         },
-#     )
-#     return {"ok": True, "message": f"Booked with {doctor} on {date_str} at {time_str}."}
-
-
-# @app.get("/api/bookings")
-# def api_bookings(doctor: str = "", date: str = ""):
-#     """Quick way to inspect rows without opening Excel."""
-#     from excel_io import FILE  # use the same path as excel_io
-#     f = Path(FILE)
-#     if not f.exists():
-#         return {"rows": []}
-
-#     wb = load_workbook(f)
-#     sheets = [doctor] if doctor and doctor in wb.sheetnames else wb.sheetnames
-
-#     all_rows = []
-#     for sh in sheets:
-#         ws = wb[sh]
-#         headers = [c.value for c in ws[1]]
-#         for r in ws.iter_rows(min_row=2, values_only=True):
-#             row = dict(zip(headers, r))
-#             row["doctor"] = sh
-#             if date and str(row.get("date")) != date:
-#                 continue
-#             all_rows.append(row)
-#     return {"rows": all_rows}
-
 import os
 import re
 import json
@@ -404,7 +11,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
 
 import dateparser
 
-# Excel I/O helpers (your excel_io.py)
+# Excel I/O helpers (for excel_io.py)
 from excel_io import (
     list_doctors,
     doctor_exists,
@@ -414,11 +21,10 @@ from excel_io import (
     ensure_workbook_with_doctors,
 )
 
-# Optional readback for /api/bookings
+# Optional: readback for /api/bookings
 from openpyxl import load_workbook
 from pathlib import Path
 
-# -------- Env & OpenAI client --------
 load_dotenv()
 BRAND = os.getenv("BRAND_NAME", "Demo Dental Clinic")
 TZ = os.getenv("TZ", "UTC")
@@ -426,7 +32,6 @@ TZ = os.getenv("TZ", "UTC")
 from openai import OpenAI
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# -------- FastAPI app --------
 app = FastAPI()
 
 # CORS so the browser frontend can call APIs locally
@@ -436,7 +41,6 @@ app.add_middleware(
     allow_methods=["*"], allow_headers=["*"],
 )
 
-# Serve static UI
 app.mount("/static", StaticFiles(directory="static", html=True), name="static")
 
 @app.get("/", response_class=HTMLResponse)
@@ -453,7 +57,6 @@ def _init_file():
 def api_doctors():
     return {"doctors": list_doctors()}
 
-# ---------------- Fuzzy doctor matching (simple & robust) ----------------
 def _norm(s: str) -> str:
     if not s:
         return ""
@@ -513,7 +116,6 @@ def choose_doctor(user_text: str):
 
     return None, None
 
-# ---------------- Prompt ----------------
 SYSTEM_PROMPT = """
 You are a friendly, concise receptionist for a dental clinic.
 Your job is to collect exactly 6 fields: doctor, name, phone, service, date, time.
@@ -547,11 +149,10 @@ Behavior:
 - Never include anything except the JSON object described above.
 """
 
-# ---------------- Utils ----------------
+# Utils
 def clean_name(s: str) -> str:
     if not s: return ""
-    # keep only letters, spaces, hyphens, and capitalize nicely
-    s = re.sub(r"[^a-zA-Z\s\-]", "", s)
+    s = re.sub(r"[^a-zA-Z\s\-]", "", s)  # keep only letters, spaces, hyphens, and capitalize nicely
     return s.strip().title()
 
 def clean_phone(s: str) -> str:
@@ -586,7 +187,7 @@ def next_missing_question(filled: dict) -> str:
             return q
     return "Great—shall I proceed to book this appointment?"
 
-# ---------------- NLU ----------------
+# NLU
 @app.post("/nlu")
 async def nlu(req: Request):
     """Takes current filled fields + latest user text, returns JSON (fields/next_question/ready)."""
@@ -669,7 +270,8 @@ async def nlu(req: Request):
 
     return JSONResponse(data)
 
-# ---------------- Booking checks & writing ----------------
+
+# Booking checks & writing
 @app.post("/check")
 async def check(req: Request):
     body = await req.json()
@@ -677,7 +279,6 @@ async def check(req: Request):
     date_text = (body.get("date_text") or "").strip()
     time_text = (body.get("time_text") or "").strip()
 
-    # Fuzzy mapping here too (safer)
     canon, ambiguous = choose_doctor(doctor_raw) if doctor_raw else (None, None)
     if ambiguous:
         return {
@@ -728,7 +329,6 @@ async def book(req: Request):
     date_text = (body.get("date_text") or "").strip()
     time_text = (body.get("time_text") or "").strip()
 
-    # Fuzzy mapping here too
     canon, ambiguous = choose_doctor(doctor_raw) if doctor_raw else (None, None)
     if ambiguous:
         return JSONResponse({"ok": False, "message": f"Did you mean {ambiguous[0]} or {ambiguous[1]}?"}, status_code=400)
@@ -770,7 +370,7 @@ async def book(req: Request):
     )
     return {"ok": True, "message": f"Booked with {doctor} on {date_str} at {time_str}."}
 
-# ---------------- View bookings in browser ----------------
+# View bookings in browser
 @app.get("/api/bookings")
 def api_bookings(doctor: str = "", date: str = ""):
     """Quick way to inspect rows without opening Excel."""
